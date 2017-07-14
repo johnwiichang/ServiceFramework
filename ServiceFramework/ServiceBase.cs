@@ -4,34 +4,49 @@ using System.Threading.Tasks;
 
 namespace ServiceFramework
 {
-    public class ServiceBase
+    public abstract class ServiceBase
     {
+        /// <summary>
+        /// 是否已经停止掉工作
+        /// </summary>
         private bool hasStopped = false;
 
-        //是否是运行实例。
+        /// <summary>
+        /// 是否需要终止服务
+        /// </summary>
+        private bool IsTerminate = false;
+
+        /// <summary>
+        /// 是否是运行实例。
+        /// </summary>
         private bool self = true;
 
-        //服务中的通信服务。
+        /// <summary>
+        /// 服务中的通信服务。
+        /// </summary>
         private CommunicationService cs;
 
-        private ArgumentsService argsrv;
+        private ArgumentsService argsrv = new ArgumentsService() { Shell = ShellType.PowerShell };
 
+        /// <summary>
+        /// 是否收到停止消息。
+        /// </summary>
         public Boolean IsStop { get; private set; } = false;
 
         /// <summary>
         /// 当服务收到停止命令的时候执行的代码。
         /// </summary>
-        public event Action OnStop;
+        public abstract void OnStop();
 
         /// <summary>
         /// 当服务初始化时执行的代码。
         /// </summary>
-        public event Action OnStart;
+        public abstract void OnStart();
 
         /// <summary>
         /// 当收到命令参数的时候响应这些参数的代码块。
         /// </summary>
-        public event Action<String[]> ReceivedArgument;
+        public abstract void ReceivedArguments(String[] args);
 
         /// <summary>
         /// 获取或者设定服务命令的标记。
@@ -40,10 +55,11 @@ namespace ServiceFramework
 
         public ShellType Shell { get { return argsrv.Shell; } set { argsrv.Shell = value; } }
 
+        /// <summary>
+        /// 初始化通讯服务然后处理委托。
+        /// </summary>
         public ServiceBase()
         {
-            argsrv = new ArgumentsService();
-            argsrv.Shell = ShellType.PowerShell;
             cs = new CommunicationService(this.GetType().FullName);
             cs.ReceivedMessage += Cs_ReceivedMessage;
             cs.ReturnedMessage += Cs_ReturnedMessage;
@@ -72,34 +88,34 @@ namespace ServiceFramework
             {
                 if (obj.Order == Order.stop || obj.Order == Order.terminate || obj.Order == Order.restart)
                 {
-                    cs.SendToSupervisor(SupervisorEventArgs.Reply("Stopping..."));
+                    SendAndShow("Stopping...");
                     IsStop = true;
                     Stop();
-                    cs.SendToSupervisor(SupervisorEventArgs.Reply("Service has been stopped."));
+                    SendAndShow("Service has been stopped.");
                 }
                 if (obj.Order == Order.terminate)
                 {
-                    OnStop += () => Environment.Exit(0);
+                    IsTerminate = true;
                 }
                 if (obj.Order == Order.start || obj.Order == Order.restart)
                 {
                     if (hasStopped)
                     {
-                        cs.SendToSupervisor(SupervisorEventArgs.Reply("Starting..."));
-                        var ex = InvokeSomethingWithoutWatching(() => Start());
+                        SendAndShow("Starting...");
+                        var ex = Utils.InvokeSomethingWithoutWatching(() => Start());
                         if (ex != "")
                         {
-                            cs.SendToSupervisor(SupervisorEventArgs.Reply(ex));
+                            SendAndShow(ex);
                         }
-                        cs.SendToSupervisor(SupervisorEventArgs.Reply("Start successfully."));
+                        SendAndShow("Start successfully.");
                     }
                     else
                     {
-                        cs.SendToSupervisor(SupervisorEventArgs.Reply("Already ran."));
+                        cs.SendToSupervisor("Already ran.".ToSupervisorAnswer());
                     }
                 }
-                cs.SendToSupervisor(SupervisorEventArgs.Answer("Done."));
-                ReceivedArgument(obj.Arguments);
+                ReceivedArguments(obj.Arguments);
+                cs.SendToSupervisor("Done.".ToSupervisorAnswer());
             }
         }
 
@@ -115,29 +131,14 @@ namespace ServiceFramework
                 if (!hasStopped)
                 {
                     //尝试开始侦听，如果出错则将参数消息发送给已存在实例。
-                    if (Utils.DetectPlatform() == Platform.Windows)
+                    if (!cs.SendToHost(BasicServiceOrder.Test))
                     {
-                        //如果是Windows平台，直接开始侦听。
                         cs.ListenAsHost();
                     }
                     else
                     {
-                        //其他平台需要尝试发送消息
-                        var test = Task.Run(() =>
-                        {
-                            cs.SendToHost(BasicServiceOrder.Test);
-                            return true;
-                        });
-                        if (!test.Wait(1000))
-                        {
-                            //如果没有回音
-                            cs.ListenAsHost();
-                        }
-                        else
-                        {
-                            //如果有回音，则表示实例已存在。
-                            throw new Exception("Instance Already Existed.");
-                        }
+                        //如果有回音，则表示实例已存在。
+                        throw new Exception("Instance Already Existed.");
                     }
                 }
                 self = true;
@@ -148,11 +149,10 @@ namespace ServiceFramework
                     if (!hasStopped)
                     {
                         var input = "";
-                        while (!IsStop && input.ToLower() != "stop")
+                        while (!IsStop)
                         {
                             input = Console.ReadLine();
-                            //注意在这里，终端只接收数据参数。
-                            if (input != "") ReceivedArgument(argsrv.Generate(input));
+                            if (input != "") cs.SendToHost(argsrv.Generate(input));
                         }
                     }
                     else
@@ -208,25 +208,24 @@ namespace ServiceFramework
             {
                 OnStop();
                 hasStopped = true;
+                if (IsTerminate) Environment.Exit(0);
             }
         }
 
         /// <summary>
-        /// 肮脏的写法，调用此方法将会忽略在调用过程中产生的一切错误。
+        /// 发送消息给操作客户端。
         /// </summary>
-        /// <param name="act"></param>
-        /// <returns></returns>
-        private static String InvokeSomethingWithoutWatching(Action act)
+        /// <returns><c>true</c>, if message was sent, <c>false</c> otherwise.</returns>
+        /// <param name="msg">Message.</param>
+        public bool SendMessage(String msg)
         {
-            try
-            {
-                act();
-                return "";
-            }
-            catch (Exception ex)
-            {
-                return ex.Message;
-            }
+            return cs.SendToSupervisor(msg.ToSupervisorReply());
+        }
+
+        private bool SendAndShow(String msg)
+        {
+            Console.WriteLine($"[INFO] {msg}");
+            return SendMessage(msg);
         }
     }
 }

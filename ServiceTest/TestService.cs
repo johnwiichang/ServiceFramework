@@ -1,50 +1,49 @@
-﻿using ServiceFramework;
-using System;
-using System.Threading.Tasks;
-
-namespace ServiceTest
+﻿namespace ServiceTest
 {
-    class TestService : ServiceBase
+    class TestService : ServiceFramework.ServiceBase
     {
         bool Finished = false;
 
         public TestService()
         {
             Flag = "-Tct";
-            this.OnStart += TestService_OnStart;
-            this.OnStop += TestService_OnStop;
-            this.ReceivedArgument += TestService_ReceivedArgument;
         }
 
-        private void TestService_ReceivedArgument(string[] obj)
+        public override void OnStop()
         {
-            if (obj.Length > 0)
-                Console.WriteLine($"Get: {String.Join(" ", obj)}");
-        }
-
-        private void TestService_OnStop()
-        {
-            Console.WriteLine("Start Ending...");
+            Log("Start Ending...");
             while (!Finished)
             {
-                Console.WriteLine("Checking Works... Please wait.");
+                Log("Checking Works... Please wait.");
                 System.Threading.Thread.Sleep(1000);
             }
         }
 
-        private void TestService_OnStart()
+        public override void OnStart()
         {
             Finished = false;
-            Console.WriteLine("This work is started.");
-            Task.Run(() =>
+            Log("This work is started.");
+            System.Threading.Tasks.Task.Run(() =>
             {
                 while (!this.IsStop)
                 {
-                    Console.WriteLine($"Current time: {DateTime.Now.ToString()}");
+                    Log($"Current time: {System.DateTime.Now.ToString()}", false);
                     System.Threading.Thread.Sleep(5000);
                 }
                 Finished = true;
             });
+        }
+
+        public override void ReceivedArguments(string[] args)
+        {
+            if (args.Length > 0)
+                Log($"Get: {string.Join(" ", args)}");
+        }
+
+        private void Log(string str, bool tosupervisor = true)
+        {
+            System.Console.WriteLine(str);
+            if (tosupervisor) SendMessage(str);
         }
     }
 }

@@ -22,12 +22,6 @@ namespace ServiceFramework
         /// </summary>
         public void ListenAsHost()
         {
-            //测试是否已经有同一个实例在运行。
-            if (Utils.DetectPlatform() == Platform.Windows)
-            {
-                var test = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte);
-                test.Dispose();
-            }
             //测试结束，如果存在一个实例，此处将会引发错误。
             Task.Run(() =>
             {
@@ -80,16 +74,11 @@ namespace ServiceFramework
         /// 发送消息到服务执行程序。
         /// </summary>
         /// <param name="msg"></param>
-        public void SendToHost(String[] msg)
+        public Boolean SendToHost(String[] msg)
         {
             using (var client = new NamedPipeClientStream(pipeName))
             {
-                client.Connect();
-                using (StreamWriter sw = new StreamWriter(client, Encoding.Unicode))
-                {
-                    sw.AutoFlush = true;
-                    sw.Write(JsonHelper<String[]>.Serialize(msg));
-                }
+                return client.SendMessage(msg);
             }
         }
 
@@ -97,16 +86,11 @@ namespace ServiceFramework
         /// 发送消息到外部命令客户端。
         /// </summary>
         /// <param name="msg"></param>
-        public void SendToSupervisor(SupervisorEventArgs msg)
+        public Boolean SendToSupervisor(SupervisorEventArgs msg)
         {
             using (var client = new NamedPipeClientStream(pipeName + "Supervisor"))
             {
-                client.Connect();
-                using (StreamWriter sw = new StreamWriter(client, Encoding.Unicode))
-                {
-                    sw.AutoFlush = true;
-                    sw.Write(JsonHelper<SupervisorEventArgs>.Serialize(msg));
-                }
+                return client.SendMessage(msg);
             }
         }
 
@@ -117,6 +101,23 @@ namespace ServiceFramework
         public CommunicationService(String pipeName)
         {
             this.pipeName = pipeName;
+        }
+    }
+
+    public static class NamedPipeExtender
+    {
+        public static bool SendMessage<T>(this NamedPipeClientStream client, T msg, Int32 timeout = 1000) where T : class
+        {
+            if (Utils.InvokeSomethingWithoutWatching(() => { client.ConnectAsync(timeout).Wait(); }) == "")
+            {
+                using (StreamWriter sw = new StreamWriter(client, Encoding.Unicode))
+                {
+                    sw.AutoFlush = true;
+                    sw.Write(JsonHelper<T>.Serialize(msg));
+                }
+                return true;
+            }
+            return false;
         }
     }
 }
